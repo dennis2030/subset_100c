@@ -1,0 +1,103 @@
+#!/usr/bin/env python
+import leveldb
+import binascii
+import numpy as np
+import caffe
+import sys
+from caffe.proto import caffe_pb2
+
+import inspect
+import multiprocessing as mp
+
+db = leveldb.LevelDB(sys.argv[1])
+db2 = leveldb.LevelDB(sys.argv[2])
+
+label_lines = open(sys.argv[3],'r').readlines()
+label_lines = [x.strip() for x in label_lines]
+
+def worker(i, similar_q, disimilar_q):
+    global db
+    global db2
+    first_datum = caffe_pb2.Datum.FromString(db.Get(str(i)))
+    first_arr = caffe.io.datum_to_array(first_datum)[0]
+    second_datum = caffe_pb2.Datum.FromString(db2.Get(str(i)))
+    second_arr = caffe.io.datum_to_array(second_datum)[0]
+
+    dist = str( np.linalg.norm( first_arr - second_arr ) ) + '\n'
+    if(label_lines[i] == '1'):
+        similar_q.put(dist)
+    else:
+        disimilar_q.put(dist)
+    return dist
+        
+def similar_listener(similar_q):
+    '''listens for messages on the q, writes to file. '''
+    similar_out_f = open(sys.argv[1].split('/')[0] + '_similar_dist.out','w')
+    while 1:
+        m = similar_q.get()
+        if( m == 'kill' ):
+            break
+        similar_out_f.write(m)
+        similar_out_f.flush()
+    similar_out_f.close()
+
+def disimilar_listener(disimilar_q):
+    '''listens for messages on the q, writes to file. '''
+    disimilar_out_f = open(sys.argv[1].split('/')[0] + '_disimilar_dist.out','w')
+    while 1:
+        m = disimilar_q.get()
+        if( m == 'kill' ):
+            break
+        disimilar_out_f.write(m)
+        disimilar_out_f.flush()
+    disimilar_out_f.close()
+
+def readLevelDB(dbName, dbName2, label_lines):
+    print 'Start reading ' + dbName + ' and ' + dbName2
+    
+    # open leveldb files
+    
+    
+    count = len(label_lines)
+   
+    similar_manager = mp.Manager()
+    similar_q = similar_manager.Queue()
+
+    disimilar_manager = mp.Manager()
+    disimilar_q = disimilar_manager.Queue()
+
+    pool = mp.Pool(mp.cpu_count() + 2)
+
+    similar_watcher = pool.apply_async(similar_listener , (similar_q,))
+    disimilar_watcher = pool.apply_async(disimilar_listener , (disimilar_q,))
+
+    jobs = []
+
+    for i in xrange(0, count):
+#    for i in xrange(0, 1000): #100 for test
+        print str(i) + ' pairs Processed'
+
+        job = pool.apply_async(worker, (i, similar_q, disimilar_q))
+        jobs.append(job)
+    for job in jobs:
+        job.get()
+    similar_q.put('kill')
+    disimilar_q.put('kill')
+    pool.close()
+    pool.join()
+    print 'Finish readling ' + dbName + ' and ' + dbName2
+
+def __main__():
+    if( len(sys.argv) < 4 ):
+        print 'Usage:./readLevelDB.py firstC secondC label'
+        return 
+    dbName_first = sys.argv[1]    
+    dbName_second = sys.argv[2]
+
+    readLevelDB(dbName_first, dbName_second, label_lines)    
+
+if __name__ == '__main__':
+    __main__()
+
+
+
